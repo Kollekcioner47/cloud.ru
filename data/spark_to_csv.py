@@ -53,7 +53,7 @@ def main():
     loyalty_analysis.show()
 
     # Сохраняем результаты
-    output_path = f"s3a://{bucket_name}/spark_output"
+    output_path = f"s3a://{bucket_name}/spark_output_csv"
     
     city_analysis.write \
         .option("header", "true") \

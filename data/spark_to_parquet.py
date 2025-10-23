@@ -79,7 +79,7 @@ def main():
         loyalty_analysis.show(20, truncate=False)
 
         # Сохраняем результаты
-        output_path = f"s3a://{bucket_name}/spark_output"
+        output_path = f"s3a://{bucket_name}/spark_output_parquet"
         
         print("=== Сохранение результатов ===")
         city_analysis.write.mode("overwrite").parquet(f"{output_path}/city_analysis")

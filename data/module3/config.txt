@@ -1,0 +1,50 @@
+# Конфигурация данных
+data:
+  ca_cert_path: "/home/jovyan/dp-cert.crt"
+  limit: 5000
+
+# Конфигурация признаков
+features:
+  target_column: "composite_risk"
+  feature_list:
+    - "total_spent"
+    - "days_since_last_transaction"
+    - "transactions_last_90d"
+    - "total_transactions"
+    - "avg_transaction_amount"
+
+# Конфигурация обучения
+training:
+  test_size: 0.3
+  random_state: 42
+  balance_data: true
+  cross_validation: true
+  cv_folds: 5
+
+# Конфигурация модели
+model:
+  type: "LogisticRegression"
+  params:
+    random_state: 42
+    max_iter: 1000
+    C: 1.0
+    solver: "lbfgs"
+
+# Конфигурация MLflow
+mlflow:
+  enabled: true
+  experiment_name: "Customer_Churn_Project"
+
+# Конфигурация вывода
+output:
+  model_dir: "models/"
+  artifacts_dir: "artifacts/"
+  create_plots: true
+
+# Конфигурация S3
+s3:
+  enabled: true
+  bucket: "bucket-ml"
+  models_path: "models/"
+  artifacts_path: "artifacts/"
+  backups_path: "backups/"

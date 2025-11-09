@@ -25,6 +25,7 @@ from sklearn.metrics import (accuracy_score, f1_score, roc_auc_score,
                             classification_report, confusion_matrix)
 import matplotlib.pyplot as plt
 import seaborn as sns
+import sklearn
 
 # Добавляем путь для импорта наших модулей
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -32,12 +33,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.data_loader import get_trino_connection, load_churn_prediction_data
 from src.features import (create_composite_risk_feature, prepare_ml_features,
                          balance_data_with_smote, get_feature_importance_report)
-
-# Попытка импорта PyTorch для чекпоинтинга
-try:
-    import torch
-except ImportError:
-    torch = None
 
 warnings.filterwarnings('ignore')
 
@@ -58,6 +53,7 @@ class ModelTrainer:
         self.metrics = {}
         self.feature_names = []
         self.current_run_id = None
+        self.experiment_name = self.config['mlflow']['experiment_name']
 
     def load_config(self, config_path):
         """
@@ -73,10 +69,65 @@ class ModelTrainer:
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
             print(f"✅ Конфигурация загружена из {config_path}")
+            print(f"📄 Имя эксперимента в конфиге: {config['mlflow']['experiment_name']}")
             return config
         except Exception as e:
             print(f"❌ Ошибка загрузки конфигурации: {e}")
             raise
+
+    def setup_mlflow(self):
+        """Настройка MLflow эксперимента"""
+        if not self.config['mlflow'].get('enabled', False):
+            return
+
+        try:
+            # Устанавливаем tracking URI для подключения к MLflow серверу
+            tracking_uri = "http://127.0.0.1:48399"
+            mlflow.set_tracking_uri(tracking_uri)
+            print(f"🔗 Подключение к MLflow: {tracking_uri}")
+            
+            # Получаем список всех экспериментов для отладки
+            try:
+                experiments = mlflow.search_experiments()
+                print("📋 Доступные эксперименты:")
+                for exp in experiments:
+                    print(f"   - {exp.name} (ID: {exp.experiment_id})")
+            except Exception as e:
+                print(f"⚠️ Не удалось получить список экспериментов: {e}")
+                print("🔄 Пытаемся продолжить...")
+            
+            # Явно создаем или получаем эксперимент
+            experiment_name = self.experiment_name
+            try:
+                experiment = mlflow.get_experiment_by_name(experiment_name)
+                if experiment is None:
+                    experiment_id = mlflow.create_experiment(experiment_name)
+                    print(f"✅ Создан новый эксперимент: {experiment_name} (ID: {experiment_id})")
+                else:
+                    experiment_id = experiment.experiment_id
+                    print(f"✅ Используем существующий эксперимент: {experiment_name} (ID: {experiment_id})")
+            except Exception as e:
+                print(f"⚠️ Ошибка при работе с экспериментом: {e}")
+                # Пробуем создать заново
+                try:
+                    experiment_id = mlflow.create_experiment(experiment_name)
+                    print(f"✅ Создан эксперимент: {experiment_name} (ID: {experiment_id})")
+                except Exception as create_error:
+                    print(f"❌ Не удалось создать эксперимент: {create_error}")
+                    return
+
+            # Устанавливаем эксперимент
+            mlflow.set_experiment(experiment_name)
+            
+            # Выводим финальную информацию о настройке
+            current_tracking_uri = mlflow.get_tracking_uri()
+            print(f"🎯 MLflow настроен:")
+            print(f"   - Tracking URI: {current_tracking_uri}")
+            print(f"   - Эксперимент: {experiment_name}")
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка настройки MLflow: {e}")
+            print("💡 Проверьте, что MLflow сервер запущен на порту 48399")
 
     def load_data(self):
         """
@@ -106,74 +157,11 @@ class ModelTrainer:
             self.feature_names = X.columns.tolist()
             print(f"✅ Данные загружены: {X.shape[0]} samples, {X.shape[1]} features")
             
-            # Логируем версию данных
-            if self.config['mlflow'].get('enabled', False):
-                self.log_data_version(df)
-                
             return X, y
 
         except Exception as e:
             print(f"❌ Ошибка загрузки данных: {e}")
             raise
-
-    def log_data_version(self, df):
-        """
-        Логирование версии данных для воспроизводимости
-
-        Args:
-            df (pd.DataFrame): DataFrame с данными
-        """
-        try:
-            # Создаем хэш от данных
-            data_hash = hashlib.md5(pd.util.hash_pandas_object(df).values).hexdigest()
-            
-            # Логируем в MLflow
-            mlflow.log_param("data_source", "trino")
-            mlflow.log_param("data_shape", str(df.shape))
-            mlflow.log_param("data_hash", data_hash)
-            mlflow.log_param("data_timestamp", pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'))
-            mlflow.log_param("data_limit", self.config['data'].get('limit', 5000))
-            
-            print(f"✅ Версия данных зафиксирована: {data_hash}")
-        except Exception as e:
-            print(f"⚠️ Ошибка логирования версии данных: {e}")
-
-    def log_environment(self):
-        """
-        Логирование информации об окружении
-        """
-        try:
-            mlflow.log_param("python_version", platform.python_version())
-            mlflow.log_param("sklearn_version", sklearn.__version__)
-            mlflow.log_param("pandas_version", pd.__version__)
-            mlflow.log_param("numpy_version", np.__version__)
-            mlflow.log_param("platform", platform.platform())
-            
-            # Сохраняем полные requirements
-            with open("requirements.txt", "w") as f:
-                # Здесь может быть команда pip freeze
-                pass
-            mlflow.log_artifact("requirements.txt")
-            
-            print("✅ Информация об окружении записана")
-        except Exception as e:
-            print(f"⚠️ Ошибка логирования окружения: {e}")
-
-    def log_git_info(self):
-        """
-        Логирование информации о версии кода
-        """
-        try:
-            git_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
-            git_branch = subprocess.check_output(['git', 'rev-parse', '--abbrev-ref', 'HEAD']).decode('utf-8').strip()
-            
-            mlflow.log_param("git_commit", git_commit)
-            mlflow.log_param("git_branch", git_branch)
-            mlflow.log_param("code_version", git_commit[:8])
-            
-            print(f"✅ Информация о Git записана: {git_branch}@{git_commit[:8]}")
-        except Exception as e:
-            print(f"⚠️ Не удалось получить информацию из Git: {e}")
 
     def prepare_data(self, X, y):
         """
@@ -275,98 +263,9 @@ class ModelTrainer:
         print("\nДетальный отчет:")
         print(classification_report(y_test, y_pred))
 
-        # Кросс-валидация
-        if self.config['training'].get('cross_validation', False):
-            cv_scores = cross_val_score(
-                self.model, X_test, y_test,
-                cv=self.config['training'].get('cv_folds', 5),
-                scoring='f1'
-            )
-            cv_metric = cv_scores.mean()
-            cv_std = cv_scores.std() * 2
-            self.metrics['cv_f1_mean'] = cv_metric
-            self.metrics['cv_f1_std'] = cv_std
-            print(f"Кросс-валидация F1: {cv_metric:.4f} (+/- {cv_std:.4f})")
-
         return self.metrics
 
-    def save_checkpoint(self, model, metrics, epoch, checkpoint_dir="checkpoints"):
-        """
-        Сохранение чекпоинта обучения с поддержкой разных типов моделей
-
-        Args:
-            model: Модель для сохранения
-            metrics (dict): Метрики на текущей эпохе
-            epoch (int): Номер эпохи
-            checkpoint_dir (str): Директория для чекпоинтов
-        """
-        os.makedirs(checkpoint_dir, exist_ok=True)
-
-        checkpoint = {
-            'epoch': epoch,
-            'metrics': metrics,
-            'timestamp': pd.Timestamp.now()
-        }
-
-        # Определяем тип модели и соответствующий способ сохранения
-        if hasattr(model, 'state_dict'):
-            # Для PyTorch моделей
-            checkpoint['model_state'] = model.state_dict()
-            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
-            # Используем torch.save для PyTorch моделей
-            if torch is not None:
-                torch.save(checkpoint, checkpoint_path)
-            else:
-                print("⚠️ PyTorch не установлен, невозможно сохранить чекпоинт PyTorch модели")
-                return
-        else:
-            # Для sklearn-подобных моделей
-            checkpoint['model'] = model
-            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pkl")
-            joblib.dump(checkpoint, checkpoint_path)
-
-        # Логируем в MLflow
-        mlflow.log_artifact(checkpoint_path, artifact_path="checkpoints")
-        print(f"✅ Чекпоинт сохранен: {checkpoint_path}")
-
-    def save_comprehensive_artifacts(self, X_test, y_test):
-        """
-        Комплексное сохранение всех артефактов эксперимента
-
-        Args:
-            X_test (pd.DataFrame): Тестовые данные
-            y_test (pd.Series): Тестовые целевые значения
-        """
-        # Создаем директории
-        os.makedirs(self.config['output']['artifacts_dir'], exist_ok=True)
-
-        # 1. Сохраняем метрики
-        metrics_path = os.path.join(self.config['output']['artifacts_dir'], 'metrics.json')
-        with open(metrics_path, 'w') as f:
-            json.dump(self.metrics, f, indent=2)
-
-        # 2. Сохраняем feature importance
-        importance_df = get_feature_importance_report(self.model, self.feature_names)
-        if importance_df is not None:
-            importance_path = os.path.join(self.config['output']['artifacts_dir'], 'feature_importance.csv')
-            importance_df.to_csv(importance_path, index=False)
-
-        # 3. Сохраняем примеры предсказаний
-        predictions_df = pd.DataFrame({
-            'actual': y_test,
-            'predicted': self.model.predict(X_test),
-            'probability': self.model.predict_proba(X_test)[:, 1] if hasattr(self.model, 'predict_proba') else None
-        })
-        predictions_path = os.path.join(self.config['output']['artifacts_dir'], 'predictions_sample.csv')
-        predictions_df.head(100).to_csv(predictions_path, index=False)
-
-        # 4. Сохраняем конфигурацию
-        shutil.copy2('configs/config.yaml', 
-                    os.path.join(self.config['output']['artifacts_dir'], 'training_config.yaml'))
-
-        print(f"✅ Все артефакты сохранены в: {self.config['output']['artifacts_dir']}")
-
-    def log_to_mlflow(self):
+    def log_to_mlflow(self, X_train, X_test, y_train, y_test):
         """
         Комплексное логирование эксперимента в MLflow
         """
@@ -374,11 +273,11 @@ class ModelTrainer:
             return
 
         try:
-            # Настройка MLflow
-            mlflow.set_experiment(self.config['mlflow']['experiment_name'])
-            
-            with mlflow.start_run() as run:
+            with mlflow.start_run(run_name=self._generate_run_name()) as run:
                 self.current_run_id = run.info.run_id
+                
+                print(f"🚀 Начался MLflow запуск: {self.current_run_id}")
+                print(f"📝 Experiment ID: {run.info.experiment_id}")
                 
                 # Логируем параметры модели
                 mlflow.log_params(self.config['model']['params'])
@@ -388,101 +287,89 @@ class ModelTrainer:
                 mlflow.log_param('data_limit', self.config['data']['limit'])
                 mlflow.log_param('test_size', self.config['training']['test_size'])
                 mlflow.log_param('random_state', self.config['training']['random_state'])
-                mlflow.log_param('balance_data', self.config['training'].get('balance_data', True))
+                
+                # Логируем информацию о данных
+                mlflow.log_param('n_features', len(self.feature_names))
+                mlflow.log_param('n_train_samples', len(X_train))
+                mlflow.log_param('n_test_samples', len(X_test))
                 
                 # Логируем метрики
                 mlflow.log_metrics(self.metrics)
                 
-                # Логируем модель
-                mlflow.sklearn.log_model(self.model, "model")
+                # Логируем модель с input_example чтобы избежать warning
+                sample_input = X_test.iloc[:1]
+                mlflow.sklearn.log_model(
+                    self.model, 
+                    "model",
+                    registered_model_name="CustomerChurnModel",
+                    input_example=sample_input
+                )
                 
-                # Логируем артефакты
-                mlflow.log_artifact("configs/config.yaml")
-                mlflow.log_artifact(os.path.join(self.config['output']['artifacts_dir'], 'metrics.json'))
+                # Логируем feature importance
+                importance_df = get_feature_importance_report(self.model, self.feature_names)
+                if importance_df is not None:
+                    # Создаем временный файл для feature importance
+                    importance_path = "feature_importance.csv"
+                    importance_df.to_csv(importance_path, index=False)
+                    mlflow.log_artifact(importance_path, "feature_importance")
+                    os.remove(importance_path)  # Удаляем временный файл
                 
-                importance_path = os.path.join(self.config['output']['artifacts_dir'], 'feature_importance.csv')
-                if os.path.exists(importance_path):
-                    mlflow.log_artifact(importance_path)
+                # Логируем графики
+                plots_path = self.create_evaluation_plots(X_test, y_test, save_only=True)
+                if plots_path and os.path.exists(plots_path):
+                    mlflow.log_artifact(plots_path, "evaluation_plots")
+                    # Удаляем временный файл после логирования
+                    os.remove(plots_path)
                 
-                plots_path = os.path.join(self.config['output']['artifacts_dir'], 'evaluation_plots.png')
-                if os.path.exists(plots_path):
-                    mlflow.log_artifact(plots_path)
+                # Логируем конфигурацию
+                mlflow.log_artifact("configs/config.yaml", "config")
                 
                 # Логируем дополнительную информацию
                 self.log_environment()
-                self.log_git_info()
                 
-                # Документируем гипотезу и результаты (пример)
-                mlflow.log_param("hypothesis", "Базовая модель для прогнозирования оттока клиентов")
-                mlflow.log_param("business_context", "Модель для выявления клиентов с риском оттока")
-                
-                conclusion = f"Модель {self.config['model']['type']} достигла ROC-AUC: {self.metrics.get('roc_auc', 0):.4f}"
-                mlflow.log_param("conclusion", conclusion)
-
                 print("✅ Эксперимент полностью записан в MLflow")
                 print(f"   Run ID: {self.current_run_id}")
+                print(f"   Run Name: {run.info.run_name}")
+                print(f"   Experiment: {self.experiment_name}")
+                print(f"   🔗 Посмотреть в UI: http://127.0.0.1:48399")
 
         except Exception as e:
             print(f"⚠️ Ошибка логирования в MLflow: {e}")
+            print("💡 Проверьте, что MLflow сервер запущен и доступен")
 
-    def register_best_model(self, run_id=None):
-        """
-        Регистрация лучшей модели в MLflow Model Registry
+    def _generate_run_name(self):
+        """Генерация читаемого имени для запуска"""
+        model_type = self.config['model']['type']
+        timestamp = datetime.now().strftime("%m%d_%H%M%S")
+        return f"{model_type}_{timestamp}"
 
-        Args:
-            run_id (str): ID запуска MLflow (если None, используется текущий)
-        """
-        if not self.config['mlflow'].get('enabled', False):
-            return
-
+    def log_environment(self):
+        """Логирование информации об окружении"""
         try:
-            if run_id is None:
-                run_id = self.current_run_id
-            if run_id is None:
-                print("⚠️ Нет run_id для регистрации модели")
-                return
-
-            # Регистрируем модель
-            model_uri = f"runs:/{run_id}/model"
-            registered_model = mlflow.register_model(model_uri, "CustomerChurnModel")
-
-            # Добавляем описание
-            client = mlflow.tracking.MlflowClient()
-            client.update_registered_model(
-                name=registered_model.name,
-                description="Модель для прогнозирования оттока клиентов"
-            )
-
-            # Добавляем метки
-            client.set_registered_model_tag(
-                name=registered_model.name,
-                key="problem_type",
-                value="classification"
-            )
+            mlflow.log_param("python_version", platform.python_version())
+            mlflow.log_param("sklearn_version", sklearn.__version__)
+            mlflow.log_param("pandas_version", pd.__version__)
+            mlflow.log_param("numpy_version", np.__version__)
+            mlflow.log_param("platform", platform.platform())
             
-            client.set_registered_model_tag(
-                name=registered_model.name,
-                key="metric_roc_auc",
-                value=str(self.metrics.get('roc_auc', 0))
-            )
-
-            print(f"✅ Модель зарегистрирована: {registered_model.name} версия {registered_model.version}")
-            
-            return registered_model
-
+            print("✅ Информация об окружении записана")
         except Exception as e:
-            print(f"❌ Ошибка регистрации модели: {e}")
+            print(f"⚠️ Ошибка логирования окружения: {e}")
 
-    def create_evaluation_plots(self, X_test, y_test):
+    def create_evaluation_plots(self, X_test, y_test, save_only=False):
         """
         Создание визуализаций для оценки модели
 
         Args:
             X_test (pd.DataFrame): Тестовые данные
             y_test (pd.Series): Тестовые целевые значения
+            save_only (bool): Только сохранить, не показывать
+
+        Returns:
+            str: Путь к сохраненному файлу с графиками
         """
         if not self.config['output'].get('create_plots', True):
-            return
+            return None
 
         try:
             print("Создание визуализаций...")
@@ -494,24 +381,21 @@ class ModelTrainer:
             # 1. Матрица ошибок
             cm = confusion_matrix(y_test, y_pred)
             sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0, 0])
-            axes[0, 0].set_title('Матрица ошибок')
-            axes[0, 0].set_xlabel('Предсказанные')
-            axes[0, 0].set_ylabel('Фактические')
+            axes[0, 0].set_title('Confusion Matrix')
+            axes[0, 0].set_xlabel('Predicted')
+            axes[0, 0].set_ylabel('Actual')
 
             # 2. Важность признаков
             importance_df = get_feature_importance_report(self.model, self.feature_names)
             if importance_df is not None:
-                if 'importance' in importance_df.columns:
-                    importance_df.sort_values('importance', ascending=True).plot(
+                top_features = importance_df.head(10)
+                if 'importance' in top_features.columns:
+                    top_features.sort_values('importance', ascending=True).plot(
                         kind='barh', x='feature', y='importance', ax=axes[0, 1]
                     )
-                else:
-                    importance_df.sort_values('abs_importance', ascending=True).plot(
-                        kind='barh', x='feature', y='abs_importance', ax=axes[0, 1]
-                    )
-                axes[0, 1].set_title('Важность признаков')
+                axes[0, 1].set_title('Top 10 Feature Importance')
 
-            # 3. ROC кривая (если есть вероятности)
+            # 3. ROC кривая
             if y_pred_proba is not None:
                 from sklearn.metrics import roc_curve
                 fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
@@ -519,80 +403,34 @@ class ModelTrainer:
                 axes[1, 0].plot([0, 1], [0, 1], 'k--')
                 axes[1, 0].set_xlabel('False Positive Rate')
                 axes[1, 0].set_ylabel('True Positive Rate')
-                axes[1, 0].set_title('ROC кривая')
+                axes[1, 0].set_title('ROC Curve')
                 axes[1, 0].legend()
-            else:
-                axes[1, 0].text(0.5, 0.5, 'ROC кривая недоступна\n(модель не возвращает вероятности)', 
-                               ha='center', va='center', transform=axes[1, 0].transAxes)
 
-            # 4. Сравнение фактических и предсказанных значений
-            axes[1, 1].scatter(range(len(y_test)), y_test, alpha=0.5, label='Фактические')
-            axes[1, 1].scatter(range(len(y_pred)), y_pred, alpha=0.5, label='Предсказанные')
-            axes[1, 1].set_xlabel('Образцы')
-            axes[1, 1].set_ylabel('Класс')
-            axes[1, 1].set_title('Сравнение фактических и предсказанных значений')
-            axes[1, 1].legend()
+            # 4. Сравнение метрик
+            metrics_for_plot = {k: v for k, v in self.metrics.items() if k in ['accuracy', 'f1_score', 'roc_auc']}
+            axes[1, 1].bar(metrics_for_plot.keys(), metrics_for_plot.values())
+            axes[1, 1].set_title('Model Metrics Comparison')
+            axes[1, 1].set_ylabel('Score')
+            for i, v in enumerate(metrics_for_plot.values()):
+                axes[1, 1].text(i, v + 0.01, f'{v:.3f}', ha='center', va='bottom')
 
             plt.tight_layout()
 
             # Сохранение графиков
-            plots_path = os.path.join(self.config['output']['artifacts_dir'], 'evaluation_plots.png')
+            plots_path = "evaluation_plots.png"
             plt.savefig(plots_path, dpi=300, bbox_inches='tight')
-            plt.show()
+            
+            if not save_only:
+                plt.show()
+            else:
+                plt.close()
 
             print(f"✅ Визуализации сохранены: {plots_path}")
+            return plots_path
 
         except Exception as e:
             print(f"⚠️ Ошибка создания визуализаций: {e}")
-
-    def save_to_s3(self):
-        """
-        Сохранение моделей и артефактов в S3
-        """
-        if not self.config.get('s3', {}).get('enabled', False):
-            return
-
-        try:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-            bucket = self.config['s3']['bucket']
-
-            # Создаем структуру в домашней директории
-            s3_backup_dir = f"s3_backup_{timestamp}"
-            local_backup_path = os.path.join(os.getcwd(), s3_backup_dir)
-            os.makedirs(local_backup_path, exist_ok=True)
-
-            # Копируем модели
-            model_files = [f for f in os.listdir(self.config['output']['model_dir']) 
-                         if os.path.isfile(os.path.join(self.config['output']['model_dir'], f))]
-            for model_file in model_files:
-                shutil.copy2(os.path.join(self.config['output']['model_dir'], model_file), 
-                           local_backup_path)
-
-            # Копируем артефакты
-            artifact_files = [f for f in os.listdir(self.config['output']['artifacts_dir']) 
-                            if os.path.isfile(os.path.join(self.config['output']['artifacts_dir'], f))]
-            for artifact_file in artifact_files:
-                shutil.copy2(os.path.join(self.config['output']['artifacts_dir'], artifact_file), 
-                           local_backup_path)
-
-            # Копируем конфигурацию
-            shutil.copy2('configs/config.yaml', local_backup_path)
-
-            # Используем команды shell для копирования в S3
-            s3_dest_path = f"/mnt/s3/{bucket}/backups/{s3_backup_dir}"
-            os.makedirs(s3_dest_path, exist_ok=True)
-
-            # Копируем с помощью shell команд
-            subprocess.run(['cp', '-r', local_backup_path + '/.', s3_dest_path], check=True)
-
-            # Очищаем временные файлы
-            shutil.rmtree(local_backup_path)
-
-            print(f"✅ Модели и артефакты сохранены в S3: {s3_dest_path}")
-
-        except Exception as e:
-            print(f"⚠️ Ошибка сохранения в S3: {e}")
-            print("Но это не критично - все файлы сохранены локально")
+            return None
 
     def run_training_pipeline(self):
         """
@@ -602,80 +440,35 @@ class ModelTrainer:
         print("=" * 50)
 
         try:
-            # 1. Загрузка данных
+            # 1. Настройка MLflow
+            self.setup_mlflow()
+
+            # 2. Загрузка данных
             X, y = self.load_data()
 
-            # 2. Подготовка данных
+            # 3. Подготовка данных
             X_train, X_test, y_train, y_test = self.prepare_data(X, y)
 
-            # 3. Обучение модели
+            # 4. Обучение модели
             self.train_model(X_train, y_train)
 
-            # 4. Оценка модели
+            # 5. Оценка модели
             self.evaluate_model(X_test, y_test)
 
-            # 5. Сохранение артефактов
-            self.save_comprehensive_artifacts(X_test, y_test)
-
-            # 6. Создание визуализаций
-            self.create_evaluation_plots(X_test, y_test)
-
-            # 7. Логирование в MLflow
-            self.log_to_mlflow()
-
-            # 8. Регистрация модели (опционально)
-            if self.config['mlflow'].get('register_model', False):
-                self.register_best_model()
-
-            # 9. Сохранение в S3 (опционально)
-            self.save_to_s3()
+            # 6. Логирование в MLflow (включая создание графиков)
+            self.log_to_mlflow(X_train, X_test, y_train, y_test)
 
             print("=" * 50)
-            print("Пайплайн обучения успешно завершен!")
+            print("🎉 Пайплайн обучения успешно завершен!")
             if self.current_run_id:
-                print(f"Run ID: {self.current_run_id}")
+                print(f"📊 Run ID: {self.current_run_id}")
+                print(f"🔍 Посмотреть результаты: http://127.0.0.1:48399")
+            
             return self.model, self.metrics
 
         except Exception as e:
-            print(f"Ошибка в пайплайне обучения: {e}")
+            print(f"❌ Ошибка в пайплайне обучения: {e}")
             raise
-
-
-def reproduce_experiment(run_id):
-    """
-    Воспроизведение эксперимента по run_id
-
-    Args:
-        run_id (str): ID запуска MLflow
-
-    Returns:
-        model: Воспроизведенная модель
-    """
-    try:
-        # Получаем информацию о запуске
-        run = mlflow.get_run(run_id)
-        print(f"Воспроизведение эксперимента: {run_id}")
-        print(f"Параметры: {run.data.params}")
-        print(f"Метрики: {run.data.metrics}")
-
-        # Загружаем модель
-        model_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="model")
-        model = mlflow.sklearn.load_model(f"{model_path}")
-
-        # Загружаем конфигурацию
-        try:
-            config_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="training_config.yaml")
-            print(f"✅ Конфигурация загружена: {config_path}")
-        except:
-            print("⚠️ Конфигурация не найдена в артефактах")
-
-        print("✅ Эксперимент успешно воспроизведен")
-        return model
-
-    except Exception as e:
-        print(f"❌ Ошибка воспроизведения эксперимента: {e}")
-        raise
-
 
 def main():
     """
@@ -690,7 +483,7 @@ def main():
 
         # Вывод итоговых результатов
         print("\n" + "=" * 50)
-        print("ИТОГОВЫЕ РЕЗУЛЬТАТЫ:")
+        print("🏆 ИТОГОВЫЕ РЕЗУЛЬТАТЫ:")
         print("=" * 50)
         for metric, value in metrics.items():
             print(f" {metric.upper()}: {value:.4f}")
@@ -698,9 +491,8 @@ def main():
         return model, metrics
 
     except Exception as e:
-        print(f"Критическая ошибка: {e}")
+        print(f"💥 Критическая ошибка: {e}")
         return None, None
-
 
 if __name__ == "__main__":
     main()

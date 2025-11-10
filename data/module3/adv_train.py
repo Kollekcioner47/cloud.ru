@@ -1,21 +1,26 @@
 """
 Основной скрипт обучения модели прогнозирования оттока клиентов
 с комплексным трекингом экспериментов через MLflow
+
+Комментарии для студентов:
+- Этот скрипт демонстрирует полный ML pipeline от загрузки данных до логирования эксперимента
+- Обратите внимание на обработку ошибок и логирование для отладки
+- MLflow используется для отслеживания экспериментов и версионирования моделей
 """
 
 import pandas as pd
 import numpy as np
-import yaml
-import mlflow
-import mlflow.sklearn
-import joblib
+import yaml  # Для работы с YAML конфигурациями
+import mlflow  # Для трекинга экспериментов
+import mlflow.sklearn  # Интеграция MLflow с scikit-learn
+import joblib  # Для сохранения моделей
 import os
 import sys
 import warnings
 import json
 import shutil
 import hashlib
-import platform
+import platform  # Для получения информации о системе
 import subprocess
 from datetime import datetime
 from sklearn.model_selection import train_test_split, cross_val_score
@@ -23,23 +28,29 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (accuracy_score, f1_score, roc_auc_score,
                             classification_report, confusion_matrix)
-import matplotlib.pyplot as plt
-import seaborn as sns
+import matplotlib.pyplot as plt  # Для визуализаций
+import seaborn as sns  # Для статистических графиков
 import sklearn
-from packaging import version
+from packaging import version  # Для сравнения версий библиотек
 
-# Добавляем путь для импорта наших модулей
+# Добавляем путь для импорта наших модулей (модули из папки src)
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
+# Импорт пользовательских модулей
 from src.data_loader import get_trino_connection, load_churn_prediction_data
 from src.features import (create_composite_risk_feature, prepare_ml_features,
                          balance_data_with_smote, get_feature_importance_report)
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore')  # Игнорируем предупреждения для чистоты вывода
 
 class ModelTrainer:
     """
     Класс для обучения и оценки ML моделей с комплексным трекингом экспериментов
+    
+    Для студентов:
+    - Этот класс инкапсулирует весь процесс обучения
+    - Каждый метод отвечает за определенный этап pipeline
+    - Обратите внимание на обработку ошибок и логирование
     """
 
     def __init__(self, config_path="configs/config.yaml"):
@@ -48,12 +59,16 @@ class ModelTrainer:
 
         Args:
             config_path (str): Путь к файлу конфигурации
+            
+        Для студентов:
+        - Конфигурация хранится в YAML файле для удобства управления параметрами
+        - Все настройки (модель, данные, MLflow) централизованы в одном месте
         """
         self.config = self.load_config(config_path)
-        self.model = None
-        self.metrics = {}
-        self.feature_names = []
-        self.current_run_id = None
+        self.model = None  # Здесь будет храниться обученная модель
+        self.metrics = {}  # Словарь для метрик качества
+        self.feature_names = []  # Список имен признаков
+        self.current_run_id = None  # ID текущего запуска MLflow
         self.experiment_name = self.config['mlflow']['experiment_name']
 
     def load_config(self, config_path):
@@ -65,6 +80,11 @@ class ModelTrainer:
 
         Returns:
             dict: Конфигурация проекта
+            
+        Для студентов:
+        - YAML удобен для хранения конфигураций благодаря читаемости
+        - Все параметры эксперимента хранятся в одном месте
+        - Обратите внимание на обработку исключений при загрузке
         """
         try:
             with open(config_path, 'r') as f:
@@ -77,7 +97,13 @@ class ModelTrainer:
             raise
 
     def setup_mlflow(self):
-        """Настройка MLflow эксперимента"""
+        """Настройка MLflow эксперимента
+        
+        Для студентов:
+        - MLflow помогает отслеживать эксперименты и управлять моделями
+        - Tracking URI указывает, куда сохранять данные (локально или на сервер)
+        - Эксперименты группируют связанные запуски
+        """
         if not self.config['mlflow'].get('enabled', False):
             return
 
@@ -136,6 +162,11 @@ class ModelTrainer:
 
         Returns:
             tuple: (X, y) - признаки и целевая переменная
+            
+        Для студентов:
+        - Данные загружаются из базы данных через Trino
+        - Обратите внимание на закрытие соединения после загрузки
+        - Признаки подготавливаются в отдельном модуле для переиспользования
         """
         print("Загрузка данных...")
         try:
@@ -143,9 +174,9 @@ class ModelTrainer:
             conn = get_trino_connection(self.config['data']['ca_cert_path'])
             df = load_churn_prediction_data(
                 conn,
-                limit=self.config['data'].get('limit', 5000)
+                limit=self.config['data'].get('limit', 5000)  # Лимит для тестирования
             )
-            conn.close()
+            conn.close()  # Важно закрывать соединение
 
             # Создаем целевую переменную и признаки
             df = create_composite_risk_feature(df)
@@ -174,6 +205,11 @@ class ModelTrainer:
 
         Returns:
             tuple: (X_train, X_test, y_train, y_test)
+            
+        Для студентов:
+        - SMOTE используется для балансировки классов (борьба с дисбалансом)
+        - Стратифицированное разбиение сохраняет распределение классов
+        - Random state обеспечивает воспроизводимость результатов
         """
         print("Подготовка данных...")
 
@@ -186,7 +222,7 @@ class ModelTrainer:
             X, y,
             test_size=self.config['training']['test_size'],
             random_state=self.config['training']['random_state'],
-            stratify=y
+            stratify=y  # Сохраняем распределение классов
         )
 
         print(f"✅ Данные подготовлены:")
@@ -201,6 +237,11 @@ class ModelTrainer:
 
         Returns:
             model: Инициализированная ML модель
+            
+        Для студентов:
+        - Паттерн "Фабрика" - создаем модель на основе конфигурации
+        - Параметры модели также берутся из конфига
+        - Легко добавить новые типы моделей
         """
         model_config = self.config['model']
         model_type = model_config['type']
@@ -225,10 +266,14 @@ class ModelTrainer:
 
         Returns:
             model: Обученная модель
+            
+        Для студентов:
+        - Метод fit - основной метод обучения в scikit-learn
+        - Модель сохраняется в self.model для последующего использования
         """
         print("Обучение модели...")
         self.model = self.initialize_model()
-        self.model.fit(X_train, y_train)
+        self.model.fit(X_train, y_train)  # Основной метод обучения
         print("✅ Модель обучена")
         return self.model
 
@@ -239,6 +284,11 @@ class ModelTrainer:
         Args:
             X_test (pd.DataFrame): Тестовые признаки
             y_test (pd.Series): Тестовая целевая переменная
+            
+        Для студентов:
+        - Используются различные метрики для комплексной оценки
+        - Classification report дает детальную информацию по классам
+        - ROC-AUC оценивает качество вероятностных предсказаний
         """
         print("Оценка модели...")
         if self.model is None:
@@ -246,13 +296,13 @@ class ModelTrainer:
 
         # Предсказания
         y_pred = self.model.predict(X_test)
-        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
+        y_pred_proba = self.model.predict_proba(X_test)[:, 1]  # Вероятности положительного класса
 
         # Расчет метрик
         self.metrics = {
-            'accuracy': accuracy_score(y_test, y_pred),
-            'f1_score': f1_score(y_test, y_pred),
-            'roc_auc': roc_auc_score(y_test, y_pred_proba)
+            'accuracy': accuracy_score(y_test, y_pred),  # Доля правильных ответов
+            'f1_score': f1_score(y_test, y_pred),  # Гармоническое среднее precision и recall
+            'roc_auc': roc_auc_score(y_test, y_pred_proba)  # Площадь под ROC кривой
         }
 
         # Вывод результатов
@@ -262,13 +312,18 @@ class ModelTrainer:
 
         # Детальный отчет
         print("\nДетальный отчет:")
-        print(classification_report(y_test, y_pred))
+        print(classification_report(y_test, y_pred))  # Precision, recall, f1-score по классам
 
         return self.metrics
 
     def log_to_mlflow(self, X_train, X_test, y_train, y_test):
         """
-        Комплексное логирование эксперимента в MLflow (адаптивно под версию 3.x и файловый режим)
+        Комплексное логирование эксперимента в MLflow
+        
+        Для студентов:
+        - MLflow логирует параметры, метрики, артефакты и модели
+        - Адаптивная логика для разных версий MLflow
+        - Model Registry позволяет управлять версиями моделей
         """
         import mlflow
         from mlflow.tracking import MlflowClient
@@ -284,7 +339,7 @@ class ModelTrainer:
             mlflow.set_tracking_uri(tracking_uri)
             mlflow.set_experiment(self.experiment_name)
     
-            # Проверяем версию MLflow
+            # Проверяем версию MLflow (важно для совместимости)
             mlflow_version = version.parse(mlflow.__version__)
             print(f"ℹ️ MLflow версия: {mlflow.__version__}")
     
@@ -298,11 +353,11 @@ class ModelTrainer:
             except Exception:
                 print("ℹ️ Model Registry недоступен — модель будет сохранена как артефакт")
     
-            # Подготовим параметры логирования (аналогично train.py)
+            # Подготовим параметры логирования (адаптивно под версии)
             use_artifact_path = mlflow_version < version.parse("3.7.0")
             log_args = {
                 "sk_model": self.model,
-                "input_example": X_test.iloc[:1]
+                "input_example": X_test.iloc[:1]  # Пример данных для демонстрации
             }
     
             if use_artifact_path:
@@ -338,7 +393,7 @@ class ModelTrainer:
                 # Логируем метрики
                 mlflow.log_metrics(self.metrics)
                 
-                # Логируем модель (адаптивно, как в train.py)
+                # Логируем модель
                 try:
                     mlflow.sklearn.log_model(**log_args)
                     print("✅ Модель успешно сохранена в MLflow")
@@ -354,7 +409,7 @@ class ModelTrainer:
                     importance_path = "feature_importance.csv"
                     importance_df.to_csv(importance_path, index=False)
                     mlflow.log_artifact(importance_path, "feature_importance")
-                    os.remove(importance_path)
+                    os.remove(importance_path)  # Чистим временные файлы
                 
                 # Логируем графики
                 plots_path = self.create_evaluation_plots(X_test, y_test, save_only=True)
@@ -374,17 +429,39 @@ class ModelTrainer:
                 print(f"   Experiment: {self.experiment_name}")
                 print(f"   🔗 Посмотреть в UI: {tracking_uri}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}")
 
+                # Инструкции для ручной регистрации если Registry недоступен
+                if not has_registry:
+                    print("\n📝 Для ручной регистрации модели используйте:")
+                    print(f"   Run ID: {self.current_run_id}")
+                    model_uri = f"runs:/{self.current_run_id}/model"
+                    print(f"   Model URI: {model_uri}")
+                    print(f"\n   Python:")
+                    print(f'   mlflow.register_model("{model_uri}", "customer_churn_model")')
+                    print(f"\n   CLI:")
+                    print(f'   mlflow models register-model --model-uri "{model_uri}" --name "customer_churn_model"')
+                    print(f"\n   Или через UI: {tracking_uri}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}")
+                
         except Exception as e:
             print(f"⚠️ Ошибка логирования в MLflow: {e}")
 
     def _generate_run_name(self):
-        """Генерация читаемого имени для запуска"""
+        """Генерация читаемого имени для запуска
+        
+        Для студентов:
+        - Имя запуска содержит тип модели и timestamp для уникальности
+        - Это помогает быстро идентифицировать эксперименты в UI
+        """
         model_type = self.config['model']['type']
         timestamp = datetime.now().strftime("%m%d_%H%M%S")
         return f"{model_type}_{timestamp}"
 
     def log_environment(self):
-        """Логирование информации об окружении"""
+        """Логирование информации об окружении
+        
+        Для студентов:
+        - Версии библиотек важны для воспроизводимости экспериментов
+        - Разное окружение может давать разные результаты
+        """
         try:
             mlflow.log_param("python_version", platform.python_version())
             mlflow.log_param("sklearn_version", sklearn.__version__)
@@ -407,6 +484,12 @@ class ModelTrainer:
 
         Returns:
             str: Путь к сохраненному файлу с графиками
+            
+        Для студентов:
+        - Визуализации помогают понять поведение модели
+        - Матрица ошибок показывает типы ошибок классификации
+        - Feature importance помогает интерпретировать модель
+        - ROC-кривая показывает trade-off между TPR и FPR
         """
         if not self.config['output'].get('create_plots', True):
             return None
@@ -416,6 +499,7 @@ class ModelTrainer:
             y_pred = self.model.predict(X_test)
             y_pred_proba = self.model.predict_proba(X_test)[:, 1] if hasattr(self.model, 'predict_proba') else None
 
+            # Создаем сетку графиков 2x2
             fig, axes = plt.subplots(2, 2, figsize=(15, 12))
 
             # 1. Матрица ошибок
@@ -440,7 +524,7 @@ class ModelTrainer:
                 from sklearn.metrics import roc_curve
                 fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
                 axes[1, 0].plot(fpr, tpr, label=f'ROC curve (AUC = {self.metrics.get("roc_auc", 0):.3f})')
-                axes[1, 0].plot([0, 1], [0, 1], 'k--')
+                axes[1, 0].plot([0, 1], [0, 1], 'k--')  # Диагональ случайного классификатора
                 axes[1, 0].set_xlabel('False Positive Rate')
                 axes[1, 0].set_ylabel('True Positive Rate')
                 axes[1, 0].set_title('ROC Curve')
@@ -463,7 +547,7 @@ class ModelTrainer:
             if not save_only:
                 plt.show()
             else:
-                plt.close()
+                plt.close()  # Важно закрыть plot чтобы не тратить память
 
             print(f"✅ Визуализации сохранены: {plots_path}")
             return plots_path
@@ -475,6 +559,11 @@ class ModelTrainer:
     def run_training_pipeline(self):
         """
         Запуск полного пайплайна обучения с комплексным трекингом
+        
+        Для студентов:
+        - Это основной метод, который координирует весь процесс
+        - Обратите внимание на последовательность этапов
+        - Каждый этап логируется и обрабатываются ошибки
         """
         print("Запуск пайплайна обучения...")
         print("=" * 50)
@@ -513,6 +602,11 @@ class ModelTrainer:
 def main():
     """
     Основная функция для запуска обучения
+    
+    Для студентов:
+    - Точка входа в программу
+    - Обратите внимание на обработку исключений на верхнем уровне
+    - Функция возвращает результаты для возможного дальнейшего использования
     """
     try:
         # Инициализация тренера
@@ -535,4 +629,5 @@ def main():
         return None, None
 
 if __name__ == "__main__":
+    # Точка входа при запуске скрипта напрямую
     main()

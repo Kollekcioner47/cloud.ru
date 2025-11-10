@@ -26,6 +26,7 @@ from sklearn.metrics import (accuracy_score, f1_score, roc_auc_score,
 import matplotlib.pyplot as plt
 import seaborn as sns
 import sklearn
+from packaging import version
 
 # Добавляем путь для импорта наших модулей
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -267,12 +268,53 @@ class ModelTrainer:
 
     def log_to_mlflow(self, X_train, X_test, y_train, y_test):
         """
-        Комплексное логирование эксперимента в MLflow
+        Комплексное логирование эксперимента в MLflow (адаптивно под версию 3.x и файловый режим)
         """
+        import mlflow
+        from mlflow.tracking import MlflowClient
+        
         if not self.config['mlflow'].get('enabled', False):
+            print("⚙️ MLflow отключён в конфигурации — пропускаем логирование")
             return
-
+    
         try:
+            print("🧭 Подключаемся к MLflow...")
+    
+            tracking_uri = self.config['mlflow'].get('tracking_uri', 'http://127.0.0.1:48399')
+            mlflow.set_tracking_uri(tracking_uri)
+            mlflow.set_experiment(self.experiment_name)
+    
+            # Проверяем версию MLflow
+            mlflow_version = version.parse(mlflow.__version__)
+            print(f"ℹ️ MLflow версия: {mlflow.__version__}")
+    
+            # Проверим наличие Model Registry
+            client = MlflowClient()
+            has_registry = False
+            try:
+                client.list_registered_models()
+                has_registry = True
+                print("✅ Model Registry доступен")
+            except Exception:
+                print("ℹ️ Model Registry недоступен — модель будет сохранена как артефакт")
+    
+            # Подготовим параметры логирования (аналогично train.py)
+            use_artifact_path = mlflow_version < version.parse("3.7.0")
+            log_args = {
+                "sk_model": self.model,
+                "input_example": X_test.iloc[:1]
+            }
+    
+            if use_artifact_path:
+                log_args["artifact_path"] = "model"
+            else:
+                log_args["name"] = "model"
+    
+            # Регистрируем модель только если Registry доступен
+            if has_registry and self.config['mlflow'].get('register_model', False):
+                log_args["registered_model_name"] = self.experiment_name + "_model"
+                print("✅ Модель будет зарегистрирована в Model Registry")
+    
             with mlflow.start_run(run_name=self._generate_run_name()) as run:
                 self.current_run_id = run.info.run_id
                 
@@ -296,29 +338,28 @@ class ModelTrainer:
                 # Логируем метрики
                 mlflow.log_metrics(self.metrics)
                 
-                # Логируем модель с input_example чтобы избежать warning
-                sample_input = X_test.iloc[:1]
-                mlflow.sklearn.log_model(
-                    self.model, 
-                    "model",
-                    registered_model_name="CustomerChurnModel",
-                    input_example=sample_input
-                )
-                
+                # Логируем модель (адаптивно, как в train.py)
+                try:
+                    mlflow.sklearn.log_model(**log_args)
+                    print("✅ Модель успешно сохранена в MLflow")
+                except Exception as e:
+                    if "logged-models" in str(e):
+                        print("ℹ️ Model Registry отсутствует — модель сохранена только как артефакт.")
+                    else:
+                        raise
+    
                 # Логируем feature importance
                 importance_df = get_feature_importance_report(self.model, self.feature_names)
                 if importance_df is not None:
-                    # Создаем временный файл для feature importance
                     importance_path = "feature_importance.csv"
                     importance_df.to_csv(importance_path, index=False)
                     mlflow.log_artifact(importance_path, "feature_importance")
-                    os.remove(importance_path)  # Удаляем временный файл
+                    os.remove(importance_path)
                 
                 # Логируем графики
                 plots_path = self.create_evaluation_plots(X_test, y_test, save_only=True)
                 if plots_path and os.path.exists(plots_path):
                     mlflow.log_artifact(plots_path, "evaluation_plots")
-                    # Удаляем временный файл после логирования
                     os.remove(plots_path)
                 
                 # Логируем конфигурацию
@@ -331,11 +372,10 @@ class ModelTrainer:
                 print(f"   Run ID: {self.current_run_id}")
                 print(f"   Run Name: {run.info.run_name}")
                 print(f"   Experiment: {self.experiment_name}")
-                print(f"   🔗 Посмотреть в UI: http://127.0.0.1:48399")
+                print(f"   🔗 Посмотреть в UI: {tracking_uri}/#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}")
 
         except Exception as e:
             print(f"⚠️ Ошибка логирования в MLflow: {e}")
-            print("💡 Проверьте, что MLflow сервер запущен и доступен")
 
     def _generate_run_name(self):
         """Генерация читаемого имени для запуска"""
